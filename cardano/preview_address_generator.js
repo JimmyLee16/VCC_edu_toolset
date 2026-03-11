@@ -389,7 +389,7 @@ function generate_shelley_testnet_address(payment_key, stake_key) {
   }
 }
 
-// Ed25519 constants (from cardano.ts)
+// Ed25519 constants 
 const P = 2n ** 255n - 19n;
 const L = 2n ** 252n + 27742317777372353535851937790883648493n;
 
@@ -455,7 +455,7 @@ function encode_point(P) {
 }
 
 /**
- * Convert master key to root key (from cardano.ts)
+ * Convert master key to root key 
  */
 function masterkey_to_rootkey(masterkey) {
   const c = masterkey.slice(64);
@@ -504,7 +504,7 @@ function child_key(k_parent, A_parent, c_parent, i) {
 }
 
 /**
- * Proper BIP32 derivation from master key to public key (from cardano.ts)
+ * Proper BIP32 derivation from master key to public key 
  */
 function masterkey_to_pubkey(masterkey, path) {
   let [k, A, c] = masterkey_to_rootkey(masterkey);
