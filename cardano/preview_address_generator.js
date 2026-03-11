@@ -3,6 +3,7 @@
 /**
  * Test Script: Generate Cardano Testnet Addresses
  * JavaScript version with embedded functions
+ * need install blakejs package
  */
 
 const crypto = require('crypto');
