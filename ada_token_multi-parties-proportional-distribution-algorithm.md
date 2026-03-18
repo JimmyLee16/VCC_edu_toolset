@@ -1,4 +1,3 @@
-
 # Multi-Sender Proportional Distribution Algorithm Design
 
 ## 📋 Table of Contents
@@ -377,6 +376,261 @@ if (totalInput !== totalOutput + fee) {
 
 ---
 
+## 🏗️ API Design & Strategy Architecture
+
+### 🎯 Problem Statement
+UI hiện tại có 4 assignment strategies + 4 fee distribution strategies, nhưng API chỉ implement proportional. Cần flexible design để support tất cả strategies mà không gây conflict.
+
+### 📋 Available Strategies
+
+#### Assignment Strategies (4 types):
+```typescript
+export type AssignmentStrategy = 'proportional' | 'round_robin' | 'capacity_based' | 'manual';
+```
+
+1. **🔄 Proportional** - Phân bổ theo tỷ lệ ADA/tokens (✅ Implemented)
+2. **🔄 Round Robin** - Phân bổ luân phiên qua senders
+3. **💰 Capacity Based** - Dựa trên capacity của mỗi sender
+4. **👤 Manual** - Gán thủ công recipient cho sender cụ thể
+
+#### Fee Distribution Strategies (4 types):
+```typescript
+export type FeeDistributionStrategy = 'proportional' | 'equal' | 'largest_sender' | 'custom';
+```
+
+1. **🔄 Proportional** - Fee chia theo tỷ lệ contribution
+2. **⚖️ Equal** - Fee chia đều cho tất cả senders
+3. **🏆 Largest Sender** - Sender lớn nhất trả toàn bộ fee
+4. **🎛️ Custom** - Custom fee distribution
+
+### 🔧 API Structure Design
+
+#### Single Endpoint - Strategy-Based Routing
+```typescript
+// POST /api/cardano/multi-sender/execute
+{
+  "batchConfig": {
+    "senders": [...],
+    "recipients": [...],
+    "network": "preview"
+  },
+  "strategies": {
+    "assignment": "proportional", // | "round_robin" | "capacity_based" | "manual"
+    "feeDistribution": "proportional" // | "equal" | "largest_sender" | "custom"
+  },
+  "options": {
+    "dryRun": false, // preview mode
+    "validateOnly": false
+  }
+}
+```
+
+#### Strategy Factory Pattern
+```typescript
+// route.ts - Main orchestrator
+async function buildBatchTransaction(params: MultiSenderRequest) {
+  const { batchConfig, strategies, options } = params;
+  
+  // Strategy selection
+  const assignmentEngine = AssignmentEngineFactory.create(strategies.assignment);
+  const feeCalculator = FeeCalculatorFactory.create(strategies.feeDistribution);
+  
+  // Execute with selected strategies
+  return await executeWithStrategies(batchConfig, assignmentEngine, feeCalculator);
+}
+```
+
+### 🏭 Modular Strategy Classes
+
+#### Assignment Strategies Implementation
+```typescript
+// strategies/AssignmentStrategies.ts
+export class ProportionalAssignment implements AssignmentStrategy {
+  calculate(balances, requirements) {
+    // ✅ Current implementation - Target Token Proportional Distribution
+    // Steps: ADA Ratios → Target Token Supply → Target Token Ratios → Distribution
+  }
+}
+
+export class RoundRobinAssignment implements AssignmentStrategy {
+  calculate(balances, requirements) {
+    const assignments = [];
+    let senderIndex = 0;
+    
+    for (const recipient of requirements.recipients) {
+      const sender = balances.senders[senderIndex % balances.senders.length];
+      assignments.push({ recipientId: recipient.id, senderId: sender.id });
+      senderIndex++;
+    }
+    
+    return assignments;
+  }
+}
+
+export class CapacityBasedAssignment implements AssignmentStrategy {
+  calculate(balances, requirements) {
+    // Sort by capacity, assign greedily
+    const sortedSenders = [...balances.senders].sort((a, b) => 
+      Number(b.capacity - a.capacity)
+    );
+    
+    return this.assignByCapacity(sortedSenders, requirements.recipients);
+  }
+}
+
+export class ManualAssignment implements AssignmentStrategy {
+  calculate(balances, requirements) {
+    // Use pre-assigned senderId from recipient.assignedSenderId
+    return requirements.recipients.map(r => ({
+      recipientId: r.id,
+      senderId: r.assignedSenderId
+    }));
+  }
+}
+```
+
+#### Fee Distribution Strategies Implementation
+```typescript
+// strategies/FeeStrategies.ts
+export class ProportionalFee implements FeeStrategy {
+  distribute(totalFee, senderContributions) {
+    // Current proportional logic - based on contribution ratios
+  }
+}
+
+export class EqualFee implements FeeStrategy {
+  distribute(totalFee, senderContributions) {
+    const feePerSender = totalFee / BigInt(senderContributions.length);
+    return senderContributions.map(() => feePerSender);
+  }
+}
+
+export class LargestSenderFee implements FeeStrategy {
+  distribute(totalFee, senderContributions) {
+    // Find largest sender, assign all fee
+    const largestIndex = senderContributions.indexOf(Math.max(...senderContributions));
+    return senderContributions.map((_, index) => 
+      index === largestIndex ? totalFee : BigInt(0)
+    );
+  }
+}
+
+export class CustomFee implements FeeStrategy {
+  distribute(totalFee, senderContributions, customRatios) {
+    // Custom ratios from user input
+    return senderContributions.map((_, index) => 
+      (totalFee * BigInt(customRatios[index])) / BigInt(100)
+    );
+  }
+}
+```
+
+### 🏭 Factory Pattern Implementation
+```typescript
+// factories/StrategyFactory.ts
+export class AssignmentEngineFactory {
+  static create(strategy: string): AssignmentStrategy {
+    switch (strategy) {
+      case 'proportional':
+        return new ProportionalAssignment();
+      case 'round_robin':
+        return new RoundRobinAssignment();
+      case 'capacity_based':
+        return new CapacityBasedAssignment();
+      case 'manual':
+        return new ManualAssignment();
+      default:
+        throw new Error(`Unknown assignment strategy: ${strategy}`);
+    }
+  }
+}
+
+export class FeeCalculatorFactory {
+  static create(strategy: string): FeeStrategy {
+    switch (strategy) {
+      case 'proportional':
+        return new ProportionalFee();
+      case 'equal':
+        return new EqualFee();
+      case 'largest_sender':
+        return new LargestSenderFee();
+      case 'custom':
+        return new CustomFee();
+      default:
+        throw new Error(`Unknown fee strategy: ${strategy}`);
+    }
+  }
+}
+```
+
+### 🔄 Updated Main Orchestrator
+```typescript
+// route.ts - Clean main orchestrator
+async function buildBatchTransaction(params: MultiSenderRequest) {
+  const { batchConfig, strategies, options } = params;
+  
+  // 1. Initialize strategies
+  const assignmentEngine = AssignmentEngineFactory.create(strategies.assignment);
+  const feeCalculator = FeeCalculatorFactory.create(strategies.feeDistribution);
+  
+  // 2. Process inputs (same for all strategies)
+  const senderBalances = await processInputs(batchConfig.senders);
+  
+  // 3. Calculate assignments using selected strategy
+  const assignments = assignmentEngine.calculate(senderBalances, batchConfig.recipients);
+  
+  // 4. Build outputs based on assignments
+  const outputs = buildOutputsFromAssignments(assignments, batchConfig.recipients);
+  
+  // 5. Calculate and distribute fees
+  const feeBreakdown = feeCalculator.distribute(calculatedFee, getSenderContributions(senderBalances));
+  
+  // 6. Build final transaction
+  return buildFinalTransaction(outputs, feeBreakdown, senderBalances);
+}
+```
+
+### 📊 Benefits of This Design
+
+#### ✅ Conflict Prevention:
+1. **Isolated Strategies:** Mỗi strategy trong class riêng biệt
+2. **Factory Pattern:** Clean strategy selection với validation
+3. **Single Entry Point:** One API endpoint, multiple behaviors
+4. **Type Safety:** Compile-time strategy validation
+
+#### 🚀 Extensibility:
+1. **Easy to Add New Strategies:** Implement interface và add to factory
+2. **Backward Compatible:** Existing API calls still work
+3. **Testable:** Each strategy có thể unit test riêng
+4. **Maintainable:** Clear separation of concerns
+
+#### 🔒 Safety:
+1. **Validation:** Factory throws error cho unknown strategies
+2. **Consistency:** Same input/output format cho tất cả strategies
+3. **Error Handling:** Strategy-specific error handling
+
+### 🎯 Migration Path
+
+#### Phase 1: Refactor Current Code
+- [ ] Move current proportional logic to ProportionalAssignment class
+- [ ] Keep same API endpoint structure
+- [ ] Add factory pattern infrastructure
+
+#### Phase 2: Add Missing Strategies
+- [ ] Implement RoundRobin assignment
+- [ ] Implement CapacityBased assignment  
+- [ ] Implement Manual assignment
+- [ ] Implement all fee distribution strategies
+- [ ] Add comprehensive testing
+
+#### Phase 3: Advanced Features
+- [ ] Add dry-run mode cho preview
+- [ ] Add validation-only mode
+- [ ] Add custom fee distribution UI
+- [ ] Add strategy performance metrics
+
+---
+
 ## 📊 Performance Considerations
 
 ### Time Complexity: O(n × m × t)
@@ -418,6 +672,134 @@ if (totalInput !== totalOutput + fee) {
 
 ---
 
+## 🏗️ Complete Strategy Architecture Design
+
+### 🎯 Architecture Overview
+
+Với 4 assignment strategies + 4 fee distribution strategies, tôi thiết kế conflict-free architecture như sau:
+
+### 📋 Strategy Interface Definitions
+
+#### Assignment Strategy Interface
+```typescript
+interface AssignmentStrategy {
+  calculate(balances: SenderBalances, requirements: RecipientRequirements): Assignment[];
+  validate(balances: SenderBalances, assignments: Assignment[]): ValidationResult;
+  getDescription(): string;
+}
+
+interface Assignment {
+  recipientId: string;
+  senderId: string;
+  adaAmount: bigint;
+  tokens: TokenAmount[];
+}
+```
+
+#### Fee Strategy Interface
+```typescript
+interface FeeStrategy {
+  distribute(totalFee: bigint, contributions: Map<string, bigint>): Map<string, bigint>;
+  validate(feeDistribution: Map<string, bigint>): ValidationResult;
+  getDescription(): string;
+}
+```
+
+### 🏭 Factory Pattern Implementation
+```typescript
+// AssignmentEngineFactory
+export class AssignmentEngineFactory {
+  static create(strategy: string): AssignmentStrategy {
+    switch (strategy) {
+      case 'proportional': return new ProportionalAssignment();
+      case 'round_robin': return new RoundRobinAssignment();
+      case 'capacity_based': return new CapacityBasedAssignment();
+      case 'manual': return new ManualAssignment();
+      default: throw new Error(`Unknown assignment strategy: ${strategy}`);
+    }
+  }
+}
+
+// FeeCalculatorFactory  
+export class FeeCalculatorFactory {
+  static create(strategy: string): FeeStrategy {
+    switch (strategy) {
+      case 'proportional': return new ProportionalFee();
+      case 'equal': return new EqualFee();
+      case 'largest_sender': return new LargestSenderFee();
+      case 'custom': return new CustomFee();
+      default: throw new Error(`Unknown fee strategy: ${strategy}`);
+    }
+  }
+}
+```
+
+### 🔄 Updated Main Orchestrator
+```typescript
+// route.ts - Clean, strategy-agnostic main function
+async function buildBatchTransaction(params: MultiSenderRequest) {
+  const { batchConfig, strategies, options } = params;
+  
+  // 1. Initialize strategies via factories
+  const assignmentEngine = AssignmentEngineFactory.create(strategies.assignment);
+  const feeCalculator = FeeCalculatorFactory.create(strategies.feeDistribution);
+  
+  // 2. Process inputs (same for all strategies)
+  const senderBalances = await processInputs(batchConfig.senders);
+  
+  // 3. Calculate assignments using selected strategy
+  const assignments = assignmentEngine.calculate(senderBalances, {
+    recipients: batchConfig.recipients
+  });
+  
+  // 4. Build outputs based on assignments
+  const outputs = buildOutputsFromAssignments(assignments, batchConfig.recipients);
+  
+  // 5. Calculate and distribute fees using selected strategy
+  const contributions = calculateSenderContributions(senderBalances, assignments);
+  const feeBreakdown = feeCalculator.distribute(calculatedFee, contributions);
+  
+  // 6. Build final transaction with fee distribution
+  return buildFinalTransaction(outputs, feeBreakdown, senderBalances);
+}
+```
+
+### 📊 Benefits of This Architecture
+
+#### ✅ Conflict Prevention
+1. **Strategy Isolation** - Mỗi strategy độc lập, không ảnh hưởng lẫn nhau
+2. **Factory Pattern** - Clean selection, runtime validation
+3. **Single Entry Point** - Một API endpoint, multiple behaviors
+4. **Type Safety** - Compile-time validation cho strategies
+
+#### 🚀 Extensibility
+1. **Easy to Add** - Implement interface, add to factory
+2. **Backward Compatible** - Existing calls vẫn work
+3. **Testable** - Unit test từng strategy riêng
+4. **Maintainable** - Clear separation of concerns
+
+### 📋 Implementation Roadmap
+
+#### Phase 1: Refactor Current Code ✅
+- Move current proportional logic vào `ProportionalAssignment` class
+- Add factory pattern infrastructure
+- Keep same API endpoint
+
+#### Phase 2: Implement Missing Strategies
+- Add `RoundRobinAssignment` implementation
+- Add `CapacityBasedAssignment` implementation  
+- Add `ManualAssignment` implementation
+- Implement fee distribution strategies
+- Add comprehensive unit tests
+
+#### Phase 3: Advanced Features
+- Add dry-run mode for preview
+- Add validation-only mode
+- Add custom fee distribution UI
+- Add strategy performance metrics
+
+---
+
 ## 🚀 Conclusion
 
 This algorithm provides a robust, fair, and scalable solution for multi-sender proportional distribution that:
@@ -427,7 +809,5 @@ This algorithm provides a robust, fair, and scalable solution for multi-sender p
 - **Handles Complexity:** Works with large numbers of senders, recipients, and token types
 - **Ensures Accuracy:** Validates balances and prevents transaction failures
 - **Optimizes Performance:** Efficient algorithm with predictable complexity
-
-## Source https://vietcardano.vercel.app/vi/blockchain-tools/tokentransfer
 
 **Đây sẽ là tool mạnh nhất cho Cardano community!** 🚀
