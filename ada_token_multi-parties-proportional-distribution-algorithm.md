@@ -800,7 +800,589 @@ async function buildBatchTransaction(params: MultiSenderRequest) {
 
 ---
 
-## 🚀 Conclusion
+## � Transaction Building Process Per Strategy
+
+### 🎯 Overview
+
+Mỗi chiến lược có transaction building process riêng biệt để đảm bảo optimal UTXO usage và correct balance tracking.
+
+### 📋 Common Transaction Building Steps
+
+#### Base Process (Applies to All Strategies)
+```typescript
+// 1. Initialize Transaction Builder
+const txBuilder = CSL.TransactionBuilder.new(
+  CSL.LinearFee.new(),
+  CSL.BigNum.from_str(protocolParams.min_fee_a.toString()),
+  CSL.BigNum.from_str(protocolParams.min_fee_b.toString()),
+  CSL.BigNum.from_str(protocolParams.max_tx_size.toString())
+);
+
+// 2. Add All Inputs (Same for all strategies)
+for (const sender of senders) {
+  for (const utxo of sender.utxos) {
+    const txInput = CSL.TransactionInput.new(
+      CSL.TransactionHash.from_hex(utxo.txHash),
+      utxo.outputIndex
+    );
+    
+    const inputValue = CSL.Value.new(CSL.BigNum.from_str(utxo.amount));
+    
+    // Add multi-assets if present
+    if (utxo.assets) {
+      const multiAsset = CSL.MultiAsset.new();
+      for (const asset of utxo.assets) {
+        const policyId = CSL.ScriptHash.from_hex(asset.policyId);
+        const assetName = CSL.AssetName.new(Buffer.from(asset.assetName, 'hex'));
+        const assets = CSL.Assets.new();
+        assets.insert(assetName, CSL.BigNum.from_str(asset.amount));
+        multiAsset.insert(policyId, assets);
+      }
+      inputValue.set_multiasset(multiAsset);
+    }
+    
+    const senderAddress = CSL.Address.from_bech32(sender.address);
+    txBuilder.add_regular_input(senderAddress, txInput, inputValue);
+  }
+}
+
+// 3. Build Outputs (Strategy-specific)
+const outputs = strategy.buildOutputs(assignments, recipients);
+
+// 4. Add Outputs to Transaction
+for (const output of outputs) {
+  const outputValue = CSL.Value.new(CSL.BigNum.from_str(output.adaAmount));
+  
+  if (output.tokens && output.tokens.length > 0) {
+    const multiAsset = CSL.MultiAsset.new();
+    for (const token of output.tokens) {
+      const policyId = CSL.ScriptHash.from_hex(token.policyId);
+      const assetName = CSL.AssetName.new(Buffer.from(token.assetName, 'hex'));
+      const assets = CSL.Assets.new();
+      assets.insert(assetName, CSL.BigNum.from_str(token.amount));
+      multiAsset.insert(policyId, assets);
+    }
+    outputValue.set_multiasset(multiAsset);
+  }
+  
+  const recipientAddress = CSL.Address.from_bech32(output.address);
+  const txOutput = CSL.TransactionOutput.new(recipientAddress, outputValue);
+  txBuilder.add_output(txOutput);
+}
+
+// 5. Calculate and Add Fee
+const calculatedFee = txBuilder.min_fee();
+txBuilder.set_fee(calculatedFee);
+
+// 6. Build Change Outputs (Strategy-specific)
+const changeOutputs = strategy.buildChangeOutputs(senderBalances, calculatedFee);
+for (const change of changeOutputs) {
+  // Add change outputs to transaction
+}
+
+// 7. Build Final Transaction
+const transaction = txBuilder.build();
+```
+
+### 🔄 Proportional Strategy Transaction Building
+
+#### Output Creation Process
+```typescript
+class ProportionalTransactionBuilder {
+  buildOutputs(assignments: Assignment[], recipients: Recipient[]): TransactionOutput[] {
+    const outputs = [];
+    
+    for (const recipient of recipients) {
+      // Get all assignments for this recipient
+      const recipientAssignments = assignments.filter(a => a.recipientId === recipient.id);
+      
+      // Create multiple outputs per recipient (one per sender)
+      for (const assignment of recipientAssignments) {
+        // Auto-add minimum ADA for token-only transfers
+        let adaAmount = assignment.adaAmount;
+        if (adaAmount === 0n && assignment.tokens.length > 0) {
+          adaAmount = BigInt(1400000); // 1.4 ADA minimum
+        }
+        
+        outputs.push({
+          address: recipient.address,
+          adaAmount: adaAmount.toString(),
+          tokens: assignment.tokens.map(token => ({
+            policyId: token.policyId.toLowerCase(),
+            assetName: token.assetName.toLowerCase(),
+            amount: token.amount.toString()
+          })),
+          senderId: assignment.senderId,
+          recipientId: recipient.id
+        });
+      }
+    }
+    
+    return outputs;
+  }
+  
+  buildChangeOutputs(
+    senderBalances: Map<string, SenderBalance>, 
+    feeDistribution: Map<string, bigint>
+  ): TransactionOutput[] {
+    const changeOutputs = [];
+    
+    for (const [senderId, balance] of senderBalances.entries()) {
+      const remainingAda = balance.inputAda - balance.outputAda - (feeDistribution.get(senderId) || 0n);
+      const remainingTokens = this.calculateRemainingTokens(balance);
+      
+      // Only create change if there's something to return
+      if (remainingAda > 0n || remainingTokens.size > 0) {
+        const changeOutput = {
+          address: balance.address,
+          adaAmount: remainingAda.toString(),
+          tokens: Array.from(remainingTokens.entries()).map(([key, amount]) => {
+            const [policyId, assetName] = key.split('.');
+            return {
+              policyId: policyId.toLowerCase(),
+              assetName: assetName.toLowerCase(),
+              amount: amount.toString()
+            };
+          }),
+          isChange: true,
+          senderId: senderId
+        };
+        
+        // Ensure minimum ADA for change with tokens
+        if (remainingAda < BigInt(1400000) && remainingTokens.size > 0) {
+          changeOutput.adaAmount = BigInt(1400000).toString();
+        }
+        
+        changeOutputs.push(changeOutput);
+      }
+    }
+    
+    return changeOutputs;
+  }
+  
+  private calculateRemainingTokens(balance: SenderBalance): Map<string, bigint> {
+    const remainingTokens = new Map<string, bigint>();
+    
+    for (const [tokenKey, inputAmount] of balance.inputTokens.entries()) {
+      const outputAmount = balance.outputTokens.get(tokenKey) || 0n;
+      const remaining = inputAmount - outputAmount;
+      
+      if (remaining > 0n) {
+        remainingTokens.set(tokenKey, remaining);
+      }
+    }
+    
+    return remainingTokens;
+  }
+}
+```
+
+#### UTXO Optimization
+```typescript
+// Proportional strategy creates:
+// - Multiple recipient outputs (one per sender assignment)
+// - Single change output per sender
+// - Optimal UTXO count: recipients × senders + senders
+
+// Example: 2 recipients, 2 senders = 4 recipient outputs + 2 change outputs = 6 UTXOs
+```
+
+### 🔄 Round Robin Strategy Transaction Building
+
+#### Output Creation Process
+```typescript
+class RoundRobinTransactionBuilder {
+  buildOutputs(assignments: Assignment[], recipients: Recipient[]): TransactionOutput[] {
+    const outputs = [];
+    
+    for (const recipient of recipients) {
+      // Round robin assigns each recipient to exactly one sender
+      const assignment = assignments.find(a => a.recipientId === recipient.id);
+      
+      if (!assignment) {
+        throw new Error(`No assignment found for recipient ${recipient.id}`);
+      }
+      
+      // Create single output per recipient (not multiple like proportional)
+      let adaAmount = assignment.adaAmount;
+      if (adaAmount === 0n && assignment.tokens.length > 0) {
+        adaAmount = BigInt(1400000);
+      }
+      
+      outputs.push({
+        address: recipient.address,
+        adaAmount: adaAmount.toString(),
+        tokens: assignment.tokens.map(token => ({
+          policyId: token.policyId.toLowerCase(),
+          assetName: token.assetName.toLowerCase(),
+          amount: token.amount.toString()
+        })),
+        senderId: assignment.senderId,
+        recipientId: recipient.id
+      });
+    }
+    
+    return outputs;
+  }
+  
+  buildChangeOutputs(
+    senderBalances: Map<string, SenderBalance>, 
+    feeDistribution: Map<string, bigint>
+  ): TransactionOutput[] {
+    // Similar to proportional but simpler
+    // Each sender has at most one recipient assignment
+    const changeOutputs = [];
+    
+    for (const [senderId, balance] of senderBalances.entries()) {
+      const feeShare = feeDistribution.get(senderId) || 0n;
+      const remainingAda = balance.inputAda - balance.outputAda - feeShare;
+      const remainingTokens = this.calculateRemainingTokens(balance);
+      
+      if (remainingAda > 0n || remainingTokens.size > 0) {
+        changeOutputs.push({
+          address: balance.address,
+          adaAmount: remainingAda.toString(),
+          tokens: Array.from(remainingTokens.entries()).map(([key, amount]) => {
+            const [policyId, assetName] = key.split('.');
+            return {
+              policyId: policyId.toLowerCase(),
+              assetName: assetName.toLowerCase(),
+              amount: amount.toString()
+            };
+          }),
+          isChange: true,
+          senderId: senderId
+        });
+      }
+    }
+    
+    return changeOutputs;
+  }
+}
+```
+
+#### UTXO Optimization
+```typescript
+// Round robin creates:
+// - Single recipient output per recipient (not multiple)
+// - Change output per sender
+// - Optimal UTXO count: recipients + senders
+
+// Example: 2 recipients, 2 senders = 2 recipient outputs + 2 change outputs = 4 UTXOs
+// More efficient than proportional for simple cases
+```
+
+### 💰 Capacity Based Strategy Transaction Building
+
+#### Output Creation Process
+```typescript
+class CapacityBasedTransactionBuilder {
+  buildOutputs(assignments: Assignment[], recipients: Recipient[]): TransactionOutput[] {
+    const outputs = [];
+    
+    // Similar to round robin - one output per recipient
+    for (const recipient of recipients) {
+      const assignment = assignments.find(a => a.recipientId === recipient.id);
+      
+      if (!assignment) {
+        throw new Error(`No assignment found for recipient ${recipient.id}`);
+      }
+      
+      let adaAmount = assignment.adaAmount;
+      if (adaAmount === 0n && assignment.tokens.length > 0) {
+        adaAmount = BigInt(1400000);
+      }
+      
+      outputs.push({
+        address: recipient.address,
+        adaAmount: adaAmount.toString(),
+        tokens: assignment.tokens.map(token => ({
+          policyId: token.policyId.toLowerCase(),
+          assetName: token.assetName.toLowerCase(),
+          amount: token.amount.toString()
+        })),
+        senderId: assignment.senderId,
+        recipientId: recipient.id
+      });
+    }
+    
+    return outputs;
+  }
+  
+  buildChangeOutputs(
+    senderBalances: Map<string, SenderBalance>, 
+    feeDistribution: Map<string, bigint>
+  ): TransactionOutput[] {
+    // Capacity based may have uneven usage
+    // Some senders might be unused, others heavily used
+    const changeOutputs = [];
+    
+    for (const [senderId, balance] of senderBalances.entries()) {
+      const feeShare = feeDistribution.get(senderId) || 0n;
+      const remainingAda = balance.inputAda - balance.outputAda - feeShare;
+      const remainingTokens = this.calculateRemainingTokens(balance);
+      
+      if (remainingAda > 0n || remainingTokens.size > 0) {
+        changeOutputs.push({
+          address: balance.address,
+          adaAmount: remainingAda.toString(),
+          tokens: Array.from(remainingTokens.entries()).map(([key, amount]) => {
+            const [policyId, assetName] = key.split('.');
+            return {
+              policyId: policyId.toLowerCase(),
+              assetName: assetName.toLowerCase(),
+              amount: amount.toString()
+            };
+          }),
+          isChange: true,
+          senderId: senderId
+        });
+      }
+    }
+    
+    return changeOutputs;
+  }
+}
+```
+
+#### UTXO Optimization
+```typescript
+// Capacity based creates:
+// - Single recipient output per recipient (like round robin)
+// - Change only for used senders
+// - Variable UTXO count based on assignment efficiency
+
+// Example: 2 recipients, 2 senders (1 used heavily, 1 unused)
+// = 2 recipient outputs + 1 change output = 3 UTXOs
+// Most efficient when some senders are unused
+```
+
+### 👤 Manual Strategy Transaction Building
+
+#### Output Creation Process
+```typescript
+class ManualTransactionBuilder {
+  buildOutputs(assignments: Assignment[], recipients: Recipient[]): TransactionOutput[] {
+    const outputs = [];
+    
+    // Manual assignments are pre-defined by user
+    for (const recipient of recipients) {
+      const assignment = assignments.find(a => a.recipientId === recipient.id);
+      
+      if (!assignment) {
+        throw new Error(`No manual assignment found for recipient ${recipient.id}`);
+      }
+      
+      // Validate manual assignment is possible
+      this.validateManualAssignment(assignment);
+      
+      let adaAmount = assignment.adaAmount;
+      if (adaAmount === 0n && assignment.tokens.length > 0) {
+        adaAmount = BigInt(1400000);
+      }
+      
+      outputs.push({
+        address: recipient.address,
+        adaAmount: adaAmount.toString(),
+        tokens: assignment.tokens.map(token => ({
+          policyId: token.policyId.toLowerCase(),
+          assetName: token.assetName.toLowerCase(),
+          amount: token.amount.toString()
+        })),
+        senderId: assignment.senderId,
+        recipientId: recipient.id
+      });
+    }
+    
+    return outputs;
+  }
+  
+  private validateManualAssignment(assignment: Assignment): void {
+    // Additional validation for manual assignments
+    if (assignment.adaAmount < 0n) {
+      throw new Error(`Manual assignment has negative ADA: ${assignment.adaAmount}`);
+    }
+    
+    for (const token of assignment.tokens) {
+      if (BigInt(token.amount) <= 0n) {
+        throw new Error(`Manual assignment has invalid token amount: ${token.amount}`);
+      }
+    }
+  }
+  
+  buildChangeOutputs(
+    senderBalances: Map<string, SenderBalance>, 
+    feeDistribution: Map<string, bigint>
+  ): TransactionOutput[] {
+    // Manual may have very uneven usage
+    const changeOutputs = [];
+    
+    for (const [senderId, balance] of senderBalances.entries()) {
+      const feeShare = feeDistribution.get(senderId) || 0n;
+      const remainingAda = balance.inputAda - balance.outputAda - feeShare;
+      const remainingTokens = this.calculateRemainingTokens(balance);
+      
+      if (remainingAda > 0n || remainingTokens.size > 0) {
+        changeOutputs.push({
+          address: balance.address,
+          adaAmount: remainingAda.toString(),
+          tokens: Array.from(remainingTokens.entries()).map(([key, amount]) => {
+            const [policyId, assetName] = key.split('.');
+            return {
+              policyId: policyId.toLowerCase(),
+              assetName: assetName.toLowerCase(),
+              amount: amount.toString()
+            };
+          }),
+          isChange: true,
+          senderId: senderId
+        });
+      }
+    }
+    
+    return changeOutputs;
+  }
+}
+```
+
+#### UTXO Optimization
+```typescript
+// Manual creates:
+// - Output per manual assignment
+// - Change only for used senders
+// - Most predictable UTXO count
+
+// Depends entirely on user's manual assignments
+// Can be most efficient if user optimizes manually
+```
+
+### 📊 UTXO Efficiency Comparison
+
+| Strategy | Recipient Outputs | Change Outputs | Total UTXOs | Best For |
+|-----------|------------------|----------------|--------------|-----------|
+| Proportional | recipients × senders | senders | (r × s) + s | Fair distribution |
+| Round Robin | recipients | used senders | r + used | Simple cases |
+| Capacity Based | recipients | used senders | r + used | Uneven capacity |
+| Manual | recipients | used senders | r + used | User control |
+
+### 🔧 Fee Distribution Integration
+
+#### Per-Strategy Fee Handling
+```typescript
+// Fee distribution applied after output creation
+class FeeDistributor {
+  distributeFees(
+    strategy: FeeStrategy,
+    totalFee: bigint,
+    senderContributions: Map<string, bigint>
+  ): Map<string, bigint> {
+    return strategy.distribute(totalFee, senderContributions);
+  }
+  
+  applyFeesToChangeOutputs(
+    changeOutputs: TransactionOutput[],
+    feeDistribution: Map<string, bigint>
+  ): TransactionOutput[] {
+    return changeOutputs.map(change => {
+      const senderId = change.senderId;
+      const feeAmount = feeDistribution.get(senderId) || 0n;
+      
+      // Subtract fee from change ADA
+      const currentAda = BigInt(change.adaAmount);
+      const adaAfterFee = currentAda - feeAmount;
+      
+      // Ensure minimum ADA after fee
+      const finalAda = adaAfterFee < BigInt(1400000) && change.tokens.length > 0
+        ? BigInt(1400000)
+        : adaAfterFee;
+      
+      return {
+        ...change,
+        adaAmount: finalAda.toString(),
+        feeDeducted: feeAmount.toString()
+      };
+    });
+  }
+}
+```
+
+### 🎯 Transaction Finalization
+
+#### Common Finalization Steps
+```typescript
+class TransactionFinalizer {
+  finalizeTransaction(
+    txBuilder: CSL.TransactionBuilder,
+    outputs: TransactionOutput[],
+    changeOutputs: TransactionOutput[],
+    feeDistribution: Map<string, bigint>
+  ): CSL.Transaction {
+    // Add all outputs
+    for (const output of outputs) {
+      this.addOutputToBuilder(txBuilder, output);
+    }
+    
+    // Add change outputs with fee deduction
+    const finalChangeOutputs = this.applyFeesToChange(changeOutputs, feeDistribution);
+    for (const change of finalChangeOutputs) {
+      this.addOutputToBuilder(txBuilder, change);
+    }
+    
+    // Calculate final fee
+    const calculatedFee = txBuilder.min_fee();
+    txBuilder.set_fee(calculatedFee);
+    
+    // Build and return
+    return txBuilder.build();
+  }
+  
+  private addOutputToBuilder(txBuilder: CSL.TransactionBuilder, output: TransactionOutput): void {
+    const outputValue = CSL.Value.new(CSL.BigNum.from_str(output.adaAmount));
+    
+    if (output.tokens && output.tokens.length > 0) {
+      const multiAsset = CSL.MultiAsset.new();
+      for (const token of output.tokens) {
+        const policyId = CSL.ScriptHash.from_hex(token.policyId);
+        const assetName = CSL.AssetName.new(Buffer.from(token.assetName, 'hex'));
+        const assets = CSL.Assets.new();
+        assets.insert(assetName, CSL.BigNum.from_str(token.amount));
+        multiAsset.insert(policyId, assets);
+      }
+      outputValue.set_multiasset(multiAsset);
+    }
+    
+    const recipientAddress = CSL.Address.from_bech32(output.address);
+    const txOutput = CSL.TransactionOutput.new(recipientAddress, outputValue);
+    txBuilder.add_output(txOutput);
+  }
+}
+```
+
+### 📈 Performance Characteristics
+
+#### Time Complexity Analysis
+```typescript
+// Per-strategy time complexity:
+// Proportional: O(n × m × t) - n=recipients, m=senders, t=tokenTypes
+// Round Robin: O(n + m) - linear time
+// Capacity Based: O(n log n + m log m) - sorting + assignment
+// Manual: O(n) - direct assignments
+
+// Space complexity: O(n × m) for all strategies
+```
+
+#### Memory Usage Patterns
+```typescript
+// Memory optimization per strategy:
+// Proportional: Highest - stores all assignment combinations
+// Round Robin: Medium - simple rotation
+// Capacity Based: Medium - sorting + greedy assignment
+// Manual: Lowest - direct lookup
+```
+
+---
+
+## �🚀 Conclusion
 
 This algorithm provides a robust, fair, and scalable solution for multi-sender proportional distribution that:
 
