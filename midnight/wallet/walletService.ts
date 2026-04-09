@@ -1,13 +1,5 @@
-import { seedToMultipleBitcoinAddresses } from './core/bitcoin';
-import { seedToMultipleEVMAddresses } from './core/evm';
-import { seedToMultipleSolanaAddresses } from './core/solana';
-import { seed_to_delegated_address, seed_to_xprv, seed_to_stakeaddress, seed_to_delegated_address_testnet, seed_to_stakeaddress_testnet, seed_to_payment_address_testnet, seed_to_child_xsk, masterkey_to_skey_json, xsk_to_skey_json } from './core/cardano';
-import { seedToTronAddress } from './core/tron';
-import { seedToAptosAddress } from './core/aptos';
-import { seedToPolkadotAddress } from './core/polkadot';
-import { seedToTonAddress } from './core/ton';
-import { seedToMidnightAddress, seedToMidnightUnshieldedAddress, seedToMidnightDustAddress } from './core/midnight';
-import { Wordlist } from './core/wordlist';
+import { seedToMidnightAddress, seedToMidnightUnshieldedAddress, seedToMidnightDustAddress } from './wallet/midnight';
+import { Wordlist } from './wallet/wordlist';
 import { mnemonicService, WordCount } from './mnemonicService';
 
 export interface GeneratedWallet {
