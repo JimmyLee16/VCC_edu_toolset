@@ -1,6 +1,6 @@
 import * as crypto from 'crypto';
-import { Wordlist } from './core/wordlist';
-import { words as englishWords } from './core/english';
+import { Wordlist } from './wordlist';
+import { words as englishWords } from './english';
 
 export type WordCount = 12 | 15 | 18 | 21 | 24;
 

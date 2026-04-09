@@ -1,0 +1,24 @@
+{
+  "name": "midnight-wallet-tui",
+  "version": "1.0.0",
+  "description": "Terminal UI for generating Midnight wallets",
+  "main": "tui.js",
+  "scripts": {
+    "start": "ts-node tui.ts",
+    "build": "tsc tui.ts --outDir dist",
+    "run": "node dist/tui.js"
+  },
+  "dependencies": {
+    "@midnight-ntwrk/ledger-v8": "^8.0.3",
+    "@midnight-ntwrk/wallet-sdk-address-format": "^3.1.0",
+    "@midnight-ntwrk/wallet-sdk-hd": "^3.0.1",
+    "@scure/bip32": "^1.7.0",
+    "inquirer": "^9.2.12"
+  },
+  "devDependencies": {
+    "@types/inquirer": "^9.0.9",
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.0.0"
+  }
+}

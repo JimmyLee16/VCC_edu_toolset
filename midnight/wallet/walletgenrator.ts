@@ -136,7 +136,7 @@ export async function seedToMidnightAddress(seed: string[], network: MidnightNet
             { ShieldedAddress, ShieldedCoinPublicKey, ShieldedEncryptionPublicKey }
         ] = await Promise.all([
             import('@midnight-ntwrk/wallet-sdk-hd'),
-            import('@midnight-ntwrk/ledger-v7'),
+            import('@midnight-ntwrk/ledger-v8'),
             import('@midnight-ntwrk/wallet-sdk-address-format')
         ]);
 
@@ -203,7 +203,7 @@ export async function seedToMidnightUnshieldedAddress(seed: string[], network: M
             { UnshieldedAddress }
         ] = await Promise.all([
             import('@midnight-ntwrk/wallet-sdk-hd'),
-            import('@midnight-ntwrk/ledger-v7'),
+            import('@midnight-ntwrk/ledger-v8'),
             import('@midnight-ntwrk/wallet-sdk-address-format')
         ]);
 
@@ -268,7 +268,7 @@ export async function seedToMidnightDustAddress(seed: string[], network: Midnigh
             { DustAddress }
         ] = await Promise.all([
             import('@midnight-ntwrk/wallet-sdk-hd'),
-            import('@midnight-ntwrk/ledger-v7'),
+            import('@midnight-ntwrk/ledger-v8'),
             import('@midnight-ntwrk/wallet-sdk-address-format')
         ]);
 
